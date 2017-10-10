@@ -224,6 +224,7 @@ public final class ModuleConversionPass implements CompilerPass {
           Node callNode = node;
           String requiredNamespace = callNode.getLastChild().getString();
           String localName = n.getFirstChild().getQualifiedName();
+          // convertRequireToDefaultImportStatements(n, localName, requiredNamespace);
           convertRequireToImportStatements(
               n, Collections.singletonList(localName), requiredNamespace, false);
           return;
@@ -281,6 +282,75 @@ public final class ModuleConversionPass implements CompilerPass {
     }
   }
 
+  class ModuleImport {
+    private Node originalImportNode;
+
+    private List<String> localNames;
+
+    private String requiredNamespace;
+
+    private boolean isDestruringImport;
+
+    private FileModule module;
+
+    private String referencedFile;
+
+    private String moduleSuffix;
+
+    private boolean imported;
+
+    private ModuleImport(Node originalImportNode, List<String> localNames, String requiredNamespace, boolean isDestruringImport) {
+      this.originalImportNode = originalImportNode;
+      this.localNames = localNames;
+      this.requiredNamespace = requiredNamespace;
+      this.isDestruringImport = isDestruringImport;
+      this.module = namespaceToModule.get(requiredNamespace);
+      this.referencedFile = pathUtil.getImportPath(originalImportNode.getSourceFileName(), module.file);
+      this.moduleSuffix = nameUtil.lastStepOfName((requiredNamespace));
+      this.imported = false;
+    }
+
+    private boolean invalidImportLHS() {
+      if (!isDestruringImport && localNames.size() != 1) {
+        compiler.report(
+            JSError.make(
+                originalImportNode,
+                GentsErrorManager.GENTS_MODULE_PASS_ERROR,
+                String.format(
+                    "Non destructuring imports should have only one local name, got [%s]",
+                    String.join(", ", localNames))));
+        return false;
+      }
+      return true;
+    }
+
+    private String getBackupName(String localName) {
+      return moduleSuffix.equals(localName) ? moduleSuffix + "Exports" : moduleSuffix;
+    }
+
+    private boolean isAlreadyConverted() {
+      return requiredNamespace.startsWith(alreadyConvertedPrefix + ".");
+    }
+
+    private boolean moduleExists() {
+      if (namespaceToModule.containsKey(requiredNamespace)){
+        return true;
+      }
+
+      if (isAlreadyConverted()) {
+        return true;
+      }
+
+      return false;
+    }
+  }
+
+  void convertRequireToDefaultImportStatements(Node n, String fullLocalName, String requiredNamespace) {}
+
+  void maybeConvertRequireForAlreadyConverted(){
+
+  }
+
   /**
    * Converts a Closure goog.require call into a TypeScript import statement.
    *
@@ -293,49 +363,17 @@ public final class ModuleConversionPass implements CompilerPass {
    *   import "./sideEffectsOnly"
    * </pre>
    */
-  void convertRequireToImportStatements(
-      Node n,
-      List<String> fullLocalNames,
-      String requiredNamespace,
-      boolean isDestructuringImports) {
-    // The rest of the functions assume that fullLocalNames contains one and only one element if
-    // this is a destructuring import.
-    if (!isDestructuringImports && fullLocalNames.size() != 1) {
+  void convertRequireToImportStatements(Node n, ModuleImport moduleImport) {
+    if (!moduleImport.moduleExists()) {
       compiler.report(
           JSError.make(
               n,
               GentsErrorManager.GENTS_MODULE_PASS_ERROR,
-              String.format(
-                  "Non destructuring imports should have only one local name, got [%s]",
-                  String.join(", ", fullLocalNames))));
-      return;
-    }
-    boolean alreadyConverted = requiredNamespace.startsWith(this.alreadyConvertedPrefix + ".");
-    if (!namespaceToModule.containsKey(requiredNamespace) && !alreadyConverted) {
-      compiler.report(
-          JSError.make(
-              n,
-              GentsErrorManager.GENTS_MODULE_PASS_ERROR,
-              String.format("Module %s does not exist.", requiredNamespace)));
+              String.format("Module %s does not exist.", moduleImport.requiredNamespace)));
       return;
     }
 
-    FileModule module = namespaceToModule.get(requiredNamespace);
-
-    String moduleSuffix = nameUtil.lastStepOfName(requiredNamespace);
-
-    // Local name is the shortened namespace symbol
-    List<String> localNames = new ArrayList();
-    // Avoid name collisions
-    List<String> backupNames = new ArrayList();
-
-    for (String fullLocalName : fullLocalNames) {
-      String localName = nameUtil.lastStepOfName(fullLocalName);
-      localNames.add(localName);
-      backupNames.add(moduleSuffix.equals(localName) ? moduleSuffix + "Exports" : moduleSuffix);
-    }
-
-    if (alreadyConverted) {
+    if (moduleImport.isAlreadyConverted()) {
       // we cannot use referencedFile here, because usually it points to the ES5 js file that is
       // the output of TS, and not the original source TS file.
       // However, we can reverse map the goog.module name to a file name.
